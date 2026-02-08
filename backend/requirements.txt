@@ -1,0 +1,11 @@
+fastapi
+uvicorn[standard]
+anthropic
+dropbox
+sse-starlette
+pydantic-settings
+Pillow
+pdf2image
+python-dotenv
+python-multipart
+requests
