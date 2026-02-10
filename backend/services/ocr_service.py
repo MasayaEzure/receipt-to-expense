@@ -30,6 +30,31 @@ EXTRACTION_PROMPT = """この画像は日本の領収書です。以下の情報
 
 JSONのみを出力してください。"""
 
+SUICA_EXTRACTION_PROMPT = """この画像はモバイルSuicaの利用明細です。
+表に記載されている全ての取引（利用履歴）を1件ずつJSON配列で抽出してください。
+
+注意事項:
+- 「入金・利用金額」列の金額を各取引のamountとして抽出してください
+- 月日はYYYY-MM-DD形式に変換してください（年は明細の期間情報から判断）
+- 種別・利用場所からdescriptionを生成してください（例: "JR東日本 渋谷→新宿"、"物販 コンビニ"）
+- 会社名は利用場所や種別から判断してください（例: "JR東日本"、"バス"等）
+- チャージ（入金）の行も含めてください。その場合descriptionは"チャージ"としてください
+- 全ページの全行を漏れなく抽出してください
+
+出力JSON形式:
+[
+  {
+    "company_name": "会社名・利用先",
+    "amount": 利用金額(整数),
+    "tax_amount": null,
+    "date": "YYYY-MM-DD",
+    "description": "種別・利用区間の説明",
+    "confidence": 0.0〜1.0の信頼度
+  }
+]
+
+JSON配列のみを出力してください。"""
+
 CATEGORY_PROMPT_TEMPLATE = """以下の領収書情報から、最適な勘定科目を1つ選んでください。
 
 領収書情報:
@@ -56,6 +81,13 @@ def _extract_json(text: str) -> dict:
             lines = lines[:-1]
         text = "\n".join(lines)
     return json.loads(text)
+
+
+def is_suica_statement(file_name: str) -> bool:
+    """Check if the file is a Mobile Suica usage statement.
+    Pattern: filename contains 'JE80FB21040250463_'
+    """
+    return "JE80FB21040250463_" in file_name
 
 
 def is_multi_receipt_pdf(file_name: str) -> bool:
@@ -128,6 +160,54 @@ async def process_receipt(image_data: list[tuple[str, str]], file_name: str, fil
         category_reason=category_reason,
         confidence=extracted.get("confidence"),
     )
+
+
+async def process_suica_statement(image_data: list[tuple[str, str]], file_name: str, file_path: str) -> list[ReceiptResult]:
+    """Process a Mobile Suica statement PDF, extracting all transactions."""
+    client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
+
+    content = []
+    for b64_data, media_type in image_data:
+        content.append({
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": media_type,
+                "data": b64_data,
+            },
+        })
+    content.append({"type": "text", "text": SUICA_EXTRACTION_PROMPT})
+
+    extraction_response = client.messages.create(
+        model="claude-sonnet-4-20250514",
+        max_tokens=4096,
+        messages=[{"role": "user", "content": content}],
+    )
+
+    transactions = _extract_json(extraction_response.content[0].text)
+    if not isinstance(transactions, list):
+        transactions = [transactions]
+
+    results: list[ReceiptResult] = []
+    for i, tx in enumerate(transactions):
+        category, category_reason = await _classify_category(client, tx)
+        amount = tx.get("amount")
+        if amount is not None:
+            amount = abs(int(amount))
+        results.append(ReceiptResult(
+            id=str(uuid.uuid4()),
+            file_name=f"{file_name} ({i + 1}/{len(transactions)})",
+            file_path=file_path,
+            company_name=tx.get("company_name"),
+            amount=amount,
+            tax_amount=tx.get("tax_amount"),
+            date=tx.get("date"),
+            description=tx.get("description"),
+            category=category,
+            category_reason=category_reason,
+            confidence=tx.get("confidence"),
+        ))
+    return results
 
 
 async def process_multi_receipt_pdf(image_pages: list[tuple[str, str]], file_name: str, file_path: str) -> list[ReceiptResult]:

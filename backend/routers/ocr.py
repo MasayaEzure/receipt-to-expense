@@ -6,7 +6,7 @@ from sse_starlette.sse import EventSourceResponse
 
 from models.receipt import BatchOcrRequest, OcrRequest, ReceiptResult
 from services.dropbox_service import download_file
-from services.ocr_service import is_multi_receipt_pdf, process_multi_receipt_pdf, process_receipt
+from services.ocr_service import is_multi_receipt_pdf, is_suica_statement, process_multi_receipt_pdf, process_receipt, process_suica_statement
 from utils.image_utils import prepare_image_base64
 
 router = APIRouter(prefix="/api/ocr", tags=["ocr"])
@@ -42,7 +42,16 @@ async def process_batch(request: BatchOcrRequest):
                 )
                 image_data = prepare_image_base64(file_bytes, file_name)
 
-                if is_multi_receipt_pdf(file_name):
+                if is_suica_statement(file_name):
+                    # Mobile Suica statement: extract all transactions
+                    results = await process_suica_statement(image_data, file_name, file_path)
+                    for result in results:
+                        yield {
+                            "event": "result",
+                            "data": result.model_dump_json(),
+                        }
+                        await asyncio.sleep(0.5)
+                elif is_multi_receipt_pdf(file_name):
                     # Multi-receipt PDF: process each page separately
                     results = await process_multi_receipt_pdf(image_data, file_name, file_path)
                     for result in results:
