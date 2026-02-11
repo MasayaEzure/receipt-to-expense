@@ -38,7 +38,7 @@ export function ResultsTable({ results, onUpdate }: Props) {
       value = isNaN(num) ? null : num;
     }
 
-    onUpdate(id, { [field]: value || null });
+    onUpdate(id, { [field]: value !== "" ? value : null });
     setEditing(null);
   };
 
