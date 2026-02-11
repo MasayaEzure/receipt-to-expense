@@ -16,8 +16,14 @@ export function startBatchProcess(
     body: JSON.stringify({ file_paths: filePaths, access_token: accessToken }),
     signal: controller.signal,
   }).then(async (response) => {
+    if (!response.ok) {
+      throw new Error(`サーバーエラー: ${response.status} ${response.statusText}`);
+    }
+
     const reader = response.body?.getReader();
-    if (!reader) return;
+    if (!reader) {
+      throw new Error("レスポンスボディを読み取れませんでした");
+    }
 
     const decoder = new TextDecoder();
     let buffer = "";
@@ -35,25 +41,38 @@ export function startBatchProcess(
         if (line.startsWith("event: ")) {
           eventType = line.slice(7).trim();
         } else if (line.startsWith("data: ")) {
-          const data = JSON.parse(line.slice(6));
-          switch (eventType) {
-            case "progress":
-              onProgress(data);
-              break;
-            case "result":
-              onResult(data);
-              break;
-            case "error":
-              onError(data);
-              break;
-            case "done":
-              onDone();
-              break;
+          try {
+            const data = JSON.parse(line.slice(6));
+            switch (eventType) {
+              case "progress":
+                onProgress(data);
+                break;
+              case "result":
+                onResult(data);
+                break;
+              case "error":
+                onError(data);
+                break;
+              case "done":
+                onDone();
+                break;
+            }
+          } catch {
+            // JSON パース失敗は無視して次の行へ
           }
           eventType = "";
         }
       }
     }
+  }).catch((err: unknown) => {
+    if (err instanceof DOMException && err.name === "AbortError") {
+      // ユーザーによるキャンセル — onDone で終了扱い
+      onDone();
+      return;
+    }
+    const message = err instanceof Error ? err.message : "不明なエラーが発生しました";
+    onError({ file_name: "", error: message });
+    onDone();
   });
 
   return controller;
